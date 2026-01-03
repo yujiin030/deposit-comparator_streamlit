@@ -37,7 +37,6 @@ st.set_page_config(
     layout="wide"
 )
 
-
 # 데이터 불러오기
 df = pd.read_csv("deposit_data.csv")
 
