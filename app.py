@@ -118,3 +118,4 @@ for idx, row in top_df.iterrows():
             st.write(f"- 최소 가입금액: {row.get('최소가입금액', 'N/A')}")
             st.write(f"- 최고금리: {row.get('최고금리(%)', 0)}%")
             st.write(f"- 추천 기준: {preference}")
+
