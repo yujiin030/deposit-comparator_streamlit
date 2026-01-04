@@ -1,120 +1,151 @@
 import streamlit as st
 import pandas as pd
+from crawler import crawl_news
+from collections import Counter
+import re
+from wordcloud import WordCloud
+import matplotlib.pyplot as plt
+from datetime import datetime
 
-# 점수 계산 함수
-def calculate_score(row, preference):
-    score = 0
-    base_rate = row["기본금리(%)"]
-    bonus_rate = row.get("우대금리(%)", 0)
-    total_rate = base_rate + bonus_rate
-
-    if preference == "금리 중시":
-        score += total_rate * 2
-        score += 1 if row["상품유형"] == "적금" else 0
-    elif preference == "기간 중시":
-        score += total_rate
-        if row["기간(개월)"] <= 6:
-            score += 3
-        elif row["기간(개월)"] <= 12:
-            score += 2
-    elif preference == "적금 선호":
-        score += total_rate
-        score += 3 if row["상품유형"] == "적금" else 0
-
-    if row.get("이자지급방식") == "복리":
-        score += 1
-
-    if row.get("최소가입금액", 0) <= 10000:
-        score += 1
-
-    return round(score, 2)
-
-
-# 페이지 설정
+# 기본 설정
 st.set_page_config(
-    page_title="예·적금 비교 서비스",
-    page_icon="🏦",
+    page_title="오늘의 이슈 대시보드",
     layout="wide"
 )
 
-# 데이터 불러오기
-df = pd.read_csv("deposit_data.csv")
+st.title("📰 오늘의 이슈 대시보드")
+st.caption("실시간 뉴스 크롤링 기반 키워드 트렌드 분석")
 
-# 사이드바 – 필터
-st.sidebar.header("🔍 필터")
-product_type = st.sidebar.selectbox("상품 유형", options=["전체", "예금", "적금"])
-bank = st.sidebar.multiselect("은행 선택", options=df["은행"].unique(), default=df["은행"].unique())
-period = st.sidebar.selectbox("가입 기간(개월)", options=["전체"] + sorted(df["기간(개월)"].unique().tolist()))
-rate_range = st.sidebar.slider(
-    "금리 범위 (%)",
-    min_value=float(df["기본금리(%)"].min()),
-    max_value=float(df["기본금리(%)"].max() + df.get("우대금리(%)", 0).max()),
-    value=(float(df["기본금리(%)"].min()), float(df["기본금리(%)"].max())),
-    step=0.1
+# 사이드바 (컨트롤 센터)
+st.sidebar.header("⚙️ 대시보드 설정")
+
+category = st.sidebar.radio(
+    "뉴스 카테고리",
+    ["경제", "IT", "사회"]
 )
-preference = st.sidebar.radio("추천 기준", ["금리 중시", "기간 중시", "적금 선호"])
 
-# 홈 + 상품 비교
-st.title("🏦 예·적금 금리 비교 서비스")
-st.write("""
-은행별 예·적금 상품을 비교하고, 사용자의 선호 기준에 따라 추천 점수를 계산합니다.
-""")
-st.write("💡 사이드바에서 필터를 조절하면 아래 상품 비교 결과가 업데이트 됩니다.")
+max_page = st.sidebar.slider(
+    "수집 페이지 수",
+    1, 5, 3
+)
 
-# 필터링
-filtered_df = df.copy()
-if product_type != "전체":
-    filtered_df = filtered_df[filtered_df["상품유형"] == product_type]
-filtered_df = filtered_df[filtered_df["은행"].isin(bank)]
-if period != "전체":
-    filtered_df = filtered_df[filtered_df["기간(개월)"] == period]
-filtered_df = filtered_df[
-    (filtered_df["기본금리(%)"] >= rate_range[0]) &
-    (filtered_df["기본금리(%)"] <= rate_range[1])
-]
+search_term = st.sidebar.text_input(
+    "🔍 제목 검색",
+    placeholder="예: 삼성, 금리, AI"
+)
 
-filtered_df["추천점수"] = filtered_df.apply(lambda row: calculate_score(row, preference), axis=1)
-filtered_df = filtered_df.sort_values(by="추천점수", ascending=False)
+show_wordcloud = st.sidebar.checkbox(
+    "워드클라우드 표시",
+    True
+)
 
-# 상품 비교 결과 – 카드형 + 색상 강조
-st.subheader("🔍 상품 비교 결과")
-for idx, row in filtered_df.iterrows():
-    is_top = idx == filtered_df.index[0]  # 최고 점수 상품
-    bg_color = "#d4edda" if is_top else ("#cce5ff" if row['상품유형']=='예금' else "#fff3cd")  # 예금/적금 색상
-    with st.container():
-        st.markdown(f"""
-        <div style="background-color:{bg_color}; padding:10px; border-radius:8px; margin-bottom:5px;">
-        <b>{row['상품명']}</b>  |  {row['은행']}  |  {row['상품유형']}  |  기간: {row['기간(개월)']}개월  |  
-        금리: {row['기본금리(%)']}% (+{row.get('우대금리(%)',0)}%)  |  점수: <b>{row['추천점수']}</b>
-        </div>
-        """, unsafe_allow_html=True)
-        with st.expander("📄 상세 정보 보기"):
-            st.write(f"- 가입조건: {row.get('가입조건', 'N/A')}")
-            st.write(f"- 이자 지급 방식: {row.get('이자지급방식', '단리')}")
-            st.write(f"- 최소 가입금액: {row.get('최소가입금액', 'N/A')}")
-            st.write(f"- 최고금리: {row.get('최고금리(%)', 0)}%")
-            st.write(f"- 추천 기준: {preference}")
+show_chart = st.sidebar.checkbox(
+    "키워드 TOP 차트 표시",
+    True
+)
 
-st.markdown("---")
+auto_refresh = st.sidebar.checkbox(
+    "🔄 새로고침 (캐시 초기화)"
+)
 
+# 데이터 로드
+@st.cache_data(ttl=600)
+def load_data(keyword, max_page):
+    return crawl_news(keyword, max_page)
 
-# 오늘의 추천 – 상위 3개 카드
-st.subheader("🏆 오늘의 추천 상품")
-df["추천점수"] = df.apply(lambda row: calculate_score(row, preference), axis=1)
-top_df = df.sort_values(by="추천점수", ascending=False).head(3)
+if auto_refresh:
+    st.cache_data.clear()
 
-for idx, row in top_df.iterrows():
-    bg_color = "#4d80f0" if idx == top_df.index[0] else "#c0d1ff"  # 최고 1개 진한 초록
-    with st.container():
-        st.markdown(f"""
-        <div style="background-color:{bg_color}; padding:12px; border-radius:10px; margin-bottom:8px;">
-        <h4>{row['상품명']}  |  {row['은행']}  |  점수: <b>{row['추천점수']}</b></h4>
-        <p>기간: {row['기간(개월)']}개월 | 금리: {row['기본금리(%)']}% (+{row.get('우대금리(%)',0)}%) | 유형: {row['상품유형']} | {row.get('이자지급방식', '단리')}</p>
-        </div>
-        """, unsafe_allow_html=True)
-        with st.expander("📄 상세 정보 보기"):
-            st.write(f"- 가입조건: {row.get('가입조건', 'N/A')}")
-            st.write(f"- 최소 가입금액: {row.get('최소가입금액', 'N/A')}")
-            st.write(f"- 최고금리: {row.get('최고금리(%)', 0)}%")
-            st.write(f"- 추천 기준: {preference}")
+df = load_data(category, max_page)
 
+st.success(f"🔄 마지막 업데이트: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+
+if df.empty:
+    st.warning("뉴스 데이터가 없습니다.")
+    st.stop()
+
+# 제목 검색 필터
+if search_term:
+    df = df[df["title"].str.contains(search_term, case=False, na=False)]
+
+st.metric("📰 수집 기사 수", len(df))
+
+# 탭 구성
+tab1, tab2 = st.tabs(["📊 요약 & 키워드 분석", "🗞 기사 목록"])
+
+# 📊 요약 & 키워드 분석
+with tab1:
+    # 키워드 전처리
+    text = " ".join(df["title"].astype(str))
+    words = re.findall(r"[가-힣]{2,}", text)
+
+    STOPWORDS = {
+        "있다","한다","했다","기자","뉴스","보도","관련","대한",
+        "이번","통해","위해","때문","오늘","지난","면서","까지",
+        "것","수","등","더","및","중"
+    }
+
+    words = [w for w in words if w not in STOPWORDS]
+
+    if not words:
+        st.warning("분석할 키워드가 부족합니다.")
+        st.stop()
+
+    top_word, top_count = Counter(words).most_common(1)[0]
+
+    # 메트릭
+    c1, c2, c3 = st.columns(3)
+    c1.metric("총 기사 수", len(df))
+    c2.metric("최다 키워드", top_word)
+    c3.metric("등장 횟수", top_count)
+
+    st.divider()
+
+    # 본문 레이아웃
+    col1, col2 = st.columns(2)
+
+    # 기사 요약
+    with col1:
+        with st.expander("📰 주요 기사 TOP 10", expanded=True):
+            st.dataframe(df.head(10), use_container_width=True)
+
+            st.download_button(
+                "📥 기사 목록 CSV 다운로드",
+                df.to_csv(index=False).encode("utf-8-sig"),
+                "news.csv",
+                "text/csv"
+            )
+
+    # 키워드 분석
+    with col2:
+        with st.expander("📊 키워드 분석", expanded=True):
+
+            if show_wordcloud:
+                wc = WordCloud(
+                    font_path="C:/Windows/Fonts/malgun.ttf",
+                    background_color="white",
+                    width=600,
+                    height=300
+                ).generate(" ".join(words))
+
+                fig, ax = plt.subplots()
+                ax.imshow(wc)
+                ax.axis("off")
+                st.pyplot(fig)
+
+            if show_chart:
+                counter = Counter(words)
+                counter = {k: v for k, v in counter.items() if v >= 2}
+                word_df = pd.DataFrame(
+                    counter.items(),
+                    columns=["단어", "빈도"]
+                ).sort_values("빈도", ascending=False).head(10)
+
+                st.bar_chart(word_df.set_index("단어"))
+
+# 🗞 기사 목록
+with tab2:
+    st.subheader("기사 원문 바로가기")
+
+    for _, row in df.iterrows():
+        st.markdown(f"- [{row['title']}]({row['link']})")
